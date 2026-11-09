@@ -1,0 +1,102 @@
+name: CI/CD - Portfolio Golfinho
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Validate static site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate home page and navigation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import unquote, urlsplit
+
+          root = Path.cwd()
+          home = root / 'index.html'
+          css = root / 'style.css'
+          assert home.is_file(), 'Missing index.html'
+          assert css.is_file(), 'Missing style.css'
+
+          class LocalLinks(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.links = []
+
+              def handle_starttag(self, tag, attrs):
+                  attributes = dict(attrs)
+                  for key in ('href', 'src'):
+                      if key in attributes:
+                          self.links.append(attributes[key])
+
+          parser = LocalLinks()
+          parser.feed(home.read_text(encoding='utf-8'))
+          checked = 0
+          for link in parser.links:
+              parsed = urlsplit(link)
+              if parsed.scheme or parsed.netloc or not parsed.path:
+                  continue
+              path = unquote(parsed.path)
+              assert not path.startswith('/'), f'Root-relative URL breaks project Pages: {link}'
+              target = (root / path).resolve()
+              assert target.is_relative_to(root), f'Link leaves site directory: {link}'
+              assert target.is_file(), f'Missing local file linked from index.html: {link}'
+              checked += 1
+          print(f'Validated index.html, style.css, and {checked} local links.')
+          PY
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare static site
+        shell: bash
+        run: |
+          mkdir _site
+          cp index.html style.css _site/
+          cp -R cadubellomo-portfolio css felipejorge-portfolio gabrielabenfica-portfolio giuliamanara-portfolio joaovitor-portfolio _site/
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy site
+        id: deployment
+        uses: actions/deploy-pages@v4
